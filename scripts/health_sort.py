@@ -8,7 +8,8 @@ Deletes dead servers and adds country information with flags.
 import socket
 import time
 import re
-import requests
+import urllib.request
+import json
 from datetime import datetime
 from typing import List, Tuple, Dict, Optional
 
@@ -67,11 +68,12 @@ def check_tcp_connectivity(host: str, port: int, timeout: float = TCP_TIMEOUT) -
         return False, float('inf')
 
 def get_country_info(host: str) -> Optional[Dict]:
-    """Get country information for IP address"""
+    """Get country information for IP address using urllib"""
     try:
-        response = requests.get(f"{GEOLOCATION_API}/{host}", timeout=2, params={"fields": "country,countryCode,city"})
-        if response.status_code == 200:
-            data = response.json()
+        url = f"{GEOLOCATION_API}/{host}?fields=country,countryCode,city"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=2) as response:
+            data = json.loads(response.read().decode())
             if data.get("status") == "success":
                 return {
                     "country": data.get("country", "Unknown"),
@@ -79,7 +81,7 @@ def get_country_info(host: str) -> Optional[Dict]:
                     "city": data.get("city", "")
                 }
     except Exception as e:
-        print(f"    [Geo lookup failed: {str(e)[:30]}]")
+        pass  # Silently fail
     return None
 
 def get_flag(country_code: str) -> str:
@@ -117,7 +119,7 @@ def process_servers(servers_file: str) -> Tuple[List[Dict], List[Dict]]:
             })
             continue
 
-        print(f"  [{idx:2d}] Checking {host:30s}...", end=" ")
+        print(f"  [{idx:2d}] Checking {host:30s}...", end=" ", flush=True)
         is_alive, latency = check_tcp_connectivity(host, port)
 
         # Get geolocation info
