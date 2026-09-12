@@ -2,6 +2,7 @@
 """
 Health check and sort script for VPN servers.
 Parses servers.txt, checks TCP connectivity, sorts by latency, and generates report.
+Deletes dead servers (only keeps live ones).
 """
 
 import socket
@@ -87,22 +88,22 @@ def process_servers(servers_file: str) -> Tuple[List[Dict], List[Dict]]:
     return live_servers, dead_servers
 
 def write_output(servers_file: str, report_file: str, live: List[Dict], dead: List[Dict]) -> None:
+    # Write only live servers to servers.txt (dead servers are deleted)
     with open(servers_file, 'w', encoding='utf-8') as f:
         for server in live:
             f.write(server["line"] + "\n")
-        for server in dead:
-            f.write(server["line"] + "\n")
 
+    # Generate health report
     report_content = f"""# VPN Server Health Report
 
 Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 
 ## Summary
 - **Live Servers**: {len(live)}
-- **Dead Servers**: {len(dead)}
-- **Total Servers**: {len(live) + len(dead)}
+- **Dead Servers Removed**: {len(dead)}
+- **Total Checked**: {len(live) + len(dead)}
 
-## Live Servers (sorted by latency)
+## Live Servers (sorted by latency - fastest first)
 
 | Host | Port | Latency (ms) |
 |------|------|--------------|
@@ -115,9 +116,11 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         report_content += f"| {host} | {port} | {latency} |\n"
 
     report_content += f"""
-## Dead Servers
+## Removed Dead Servers
 
-| Host | Port | Status |
+Total removed: **{len(dead)}**
+
+| Host | Port | Reason |
 |------|------|--------|
 """
 
@@ -130,7 +133,7 @@ Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     with open(report_file, 'w', encoding='utf-8') as f:
         f.write(report_content)
 
-    print(f"\n✓ Updated {servers_file}")
+    print(f"\n✓ Updated {servers_file} (removed {len(dead)} dead servers)")
     print(f"✓ Generated {report_file}")
 
 def main():
@@ -142,7 +145,7 @@ def main():
 
     print(f"\nResults:")
     print(f"  Live servers: {len(live_servers)}")
-    print(f"  Dead servers: {len(dead_servers)}\n")
+    print(f"  Dead servers (will be removed): {len(dead_servers)}\n")
 
     write_output(SERVERS_FILE, REPORT_FILE, live_servers, dead_servers)
 
