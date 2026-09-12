@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""
+IFIXVPN — lightweight health sorter for servers.txt
+- Parses ss:// vmess:// vless:// trojan:// host:port
+- TCP connect test with timeout
+- Sorts live servers by lowest latency first
+- Keeps unreachable lines at the bottom (does not delete by default)
+"""
+from __future__ import annotations
+
+import base64
+import json
+import os
+import re
+import socket
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional, Tuple
+from urllib.parse import unquote, urlparse
+
+ROOT = Path(__file__).resolve().parent.parent
+SERVERS = ROOT / "servers.txt"
+REPORT = ROOT / "health-report.md"
+TIMEOUT = float(os.environ.get("TCP_TIMEOUT", "4"))
+WORKERS = int(os.environ.get("TCP_WORKERS", "20"))
+# set DROP_DEAD=1 to remove unreachable lines instead of moving them down
+DROP_DEAD = os.environ.get("DROP_DEAD", "0") == "1"
+
+
+def b64decode_padded(data: str) -> bytes:
+    data = data.strip().replace("-", "+").replace("_", "/")
+    pad = (-len(data)) % 4
+    if pad:
+        data += "=" * pad
+    return base64.b64decode(data)
+
+
+def parse_host_port(line: str) -> Tuple[Optional[str], Optional[int], str]:
+    """Return (host, port, protocol_label)."""
+    raw = line.strip()
+    if not raw or raw.startswith("#"):
+        return None, None, "comment"
+
+    lower = raw.lower()
+    try:
+        if lower.startswith("ss://"):
+            body = raw[5:]
+            if "#" in body:
+                body = body.split("#", 1)[0]
+            # ss://base64@host:port OR ss://method:pass@host:port
+            if "@" in body:
+                userinfo, hostport = body.rsplit("@", 1)
+                # userinfo may be base64
+                try:
+                    if ":" not in userinfo:
+                        b64decode_padded(userinfo)  # validate
+                except Exception:
+                    pass
+                hostport = hostport.strip()
+                if hostport.startswith("["):  # ipv6
+                    m = re.match(r"\[([^\]]+)\]:(\d+)", hostport)
+                    if m:
+                        return m.group(1), int(m.group(2)), "ss"
+                if ":" in hostport:
+                    host, port = hostport.rsplit(":", 1)
+                    return host, int(port), "ss"
+            else:
+                # entire thing base64: method:pass@host:port
+                decoded = b64decode_padded(body).decode("utf-8", errors="ignore")
+                if "@" in decoded:
+                    _, hostport = decoded.rsplit("@", 1)
+                    host, port = hostport.rsplit(":", 1)
+                    return host, int(port), "ss"
+
+        if lower.startswith("vmess://"):
+            payload = raw[8:]
+            if "#" in payload:
+                payload = payload.split("#", 1)[0]
+            obj = json.loads(b64decode_padded(payload).decode("utf-8"))
+            host = obj.get("add") or obj.get("host") or ""
+            port = int(obj.get("port") or 0)
+            return host or None, port or None, "vmess"
+
+        if lower.startswith("vless://") or lower.startswith("trojan://"):
+            # vless://uuid@host:port?params#name
+            u = urlparse(raw)
+            host = u.hostname
+            port = u.port
+            return host, port, lower.split("://", 1)[0]
+
+        if lower.startswith("ssr://"):
+            return None, None, "ssr"  # skip complex parse; leave untested
+
+    except Exception:
+        return None, None, "parse_error"
+
+    return None, None, "unknown"
+
+
+def tcp_ping(host: str, port: int, timeout: float = TIMEOUT) -> Optional[float]:
+    """Return latency ms or None if failed."""
+    try:
+        # prefer IPv4
+        infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        if not infos:
+            return None
+        family, socktype, proto, _, sockaddr = infos[0]
+        t0 = time.perf_counter()
+        s = socket.socket(family, socktype, proto)
+        s.settimeout(timeout)
+        try:
+            s.connect(sockaddr)
+            ms = (time.perf_counter() - t0) * 1000.0
+            return round(ms, 1)
+        finally:
+            s.close()
+    except Exception:
+        return None
+
+
+def test_line(line: str) -> dict:
+    host, port, proto = parse_host_port(line)
+    if not host or not port:
+        return {
+            "line": line,
+            "ok": False,
+            "ms": None,
+            "host": host,
+            "port": port,
+            "proto": proto,
+            "note": "skip/parse",
+        }
+    ms = tcp_ping(host, port)
+    return {
+        "line": line,
+        "ok": ms is not None,
+        "ms": ms,
+        "host": host,
+        "port": port,
+        "proto": proto,
+        "note": "ok" if ms is not None else "unreachable",
+    }
+
+
+def main() -> int:
+    if not SERVERS.exists():
+        print(f"ERROR: {SERVERS} not found")
+        return 1
+
+    lines = [ln.rstrip("\n") for ln in SERVERS.read_text(encoding="utf-8").splitlines()]
+    # preserve blank lines only if alone — normally skip empties in testing
+    nonempty = [ln for ln in lines if ln.strip()]
+    blanks = len(lines) - len(nonempty)
+
+    results = []
+    with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+        futs = {ex.submit(test_line, ln): ln for ln in nonempty}
+        for fut in as_completed(futs):
+            results.append(fut.result())
+
+    live = [r for r in results if r["ok"]]
+    dead = [r for r in results if not r["ok"]]
+    live.sort(key=lambda r: (r["ms"] if r["ms"] is not None else 99999))
+
+    if DROP_DEAD:
+        ordered = live
+    else:
+        ordered = live + dead
+
+    out_lines = [r["line"] for r in ordered]
+    SERVERS.write_text("\n".join(out_lines) + ("\n" if out_lines else ""), encoding="utf-8")
+
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    report = [
+        f"# IFIXVPN health report",
+        f"",
+        f"- Updated: **{now}**",
+        f"- Total: **{len(results)}**",
+        f"- Live (TCP): **{len(live)}**",
+        f"- Unreachable: **{len(dead)}**",
+        f"- Mode: `{'drop dead' if DROP_DEAD else 'keep dead at bottom'}`",
+        f"",
+        f"| Status | Proto | Host:Port | Latency |",
+        f"|--------|-------|-----------|---------|",
+    ]
+    for r in live:
+        report.append(f"| OK | {r['proto']} | `{r['host']}:{r['port']}` | {r['ms']} ms |")
+    for r in dead:
+        report.append(
+            f"| FAIL | {r['proto']} | `{r['host'] or '-'}:{r['port'] or '-'}` | — ({r['note']}) |"
+        )
+    REPORT.write_text("\n".join(report) + "\n", encoding="utf-8")
+
+    print(f"Live={len(live)} Dead={len(dead)} blanks_ignored={blanks}")
+    for r in live[:10]:
+        print(f"  OK  {r['ms']:7.1f}ms  {r['proto']:6} {r['host']}:{r['port']}")
+    for r in dead[:10]:
+        print(f"  FAIL          {r['proto']:6} {r['host']}:{r['port']} ({r['note']})")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
