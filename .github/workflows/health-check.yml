@@ -24,11 +24,13 @@ jobs:
       - name: Run health check script
         run: python scripts/health_sort.py
       
-      - name: Commit and push changes
+      - name: Configure git
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          
+      
+      - name: Commit and push changes
+        run: |
           if git diff --quiet; then
             echo "No changes detected"
           else
