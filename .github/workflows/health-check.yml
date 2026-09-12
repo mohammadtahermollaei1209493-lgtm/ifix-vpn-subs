@@ -37,3 +37,4 @@ jobs:
             git add servers.txt health-report.md
             git commit -m "ci: update health check results"
             git push
+          fi
