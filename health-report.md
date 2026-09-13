@@ -1,6 +1,6 @@
 # VPN Server Health Report
 
-Generated: 2026-09-13 01:58:44
+Generated: 2026-09-13 07:44:43
 
 ## Summary
 - **Live Servers**: 4
@@ -11,10 +11,10 @@ Generated: 2026-09-13 01:58:44
 
 | Flag | Country | City | Host | Port | Latency (ms) |
 |------|---------|------|------|------|--------------|
-| 🌍 | Unknown |  | 81.28.9.167 | 25858 | 149.5 |
-| 🌍 | Unknown |  | 81.28.9.171 | 25858 | 152.2 |
-| 🌍 | Unknown |  | 81.28.9.186 | 25858 | 153.9 |
-| 🌍 | Unknown |  | 81.28.9.55 | 25858 | 159.4 |
+| 🌍 | Unknown |  | 81.28.9.171 | 25858 | 154.2 |
+| 🌍 | Unknown |  | 81.28.9.55 | 25858 | 155.8 |
+| 🌍 | Unknown |  | 81.28.9.186 | 25858 | 161.8 |
+| 🌍 | Unknown |  | 81.28.9.167 | 25858 | 163.7 |
 
 ## Removed Dead Servers
 
